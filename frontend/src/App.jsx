@@ -6,7 +6,9 @@ import { WaveIcon, AlertIcon } from './components/Icons.jsx'
 
 const MAX = 500
 const POLL_MS = 1000
-const TIMEOUT_MS = 60000
+// Generous: a Render free instance can take ~60s to wake from idle on the first
+// request, so a cold open finishes slowly instead of erroring out.
+const TIMEOUT_MS = 120000
 const PLACEHOLDER =
   'Type something and hear it spoken — e.g. Hi Kenji, this is a live Qwen text-to-speech demo.'
 
