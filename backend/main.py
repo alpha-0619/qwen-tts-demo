@@ -22,11 +22,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
+from collections import defaultdict, deque
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -57,6 +59,30 @@ app.add_middleware(
 JOBS: dict[str, dict] = {}
 _tasks: set[asyncio.Task] = set()
 
+# Simple in-memory per-IP rate limit on /generate (the quota-consuming endpoint).
+# Stops anyone with the URL from hammering the API key's free quota.
+RATE_LIMIT = 20  # max generations...
+RATE_WINDOW = 60.0  # ...per this many seconds, per client IP
+_hits: dict[str, deque] = defaultdict(deque)
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()  # real client IP behind Render's proxy
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    hits = _hits[ip]
+    while hits and now - hits[0] > RATE_WINDOW:
+        hits.popleft()
+    if len(hits) >= RATE_LIMIT:
+        return True
+    hits.append(now)
+    return False
+
 
 class GenerateRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=MAX_TEXT_LEN)
@@ -86,7 +112,9 @@ async def health():
 
 
 @app.post("/generate", response_model=GenerateResponse)
-async def generate(req: GenerateRequest):
+async def generate(req: GenerateRequest, request: Request):
+    if _rate_limited(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a minute and try again.")
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text must not be empty.")
