@@ -1,0 +1,17 @@
+# Render Blueprint — deploys the FastAPI backend.
+# New → Blueprint → connect this repo. Render reads this file and configures
+# everything; you only paste DASHSCOPE_API_KEY (prompted, kept secret).
+services:
+  - name: qwen-tts-demo-api
+    type: web
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DASHSCOPE_API_KEY
+        sync: false          # set in the dashboard, never stored in git
+      - key: ALLOWED_ORIGINS
+        value: "*"           # tighten to the Vercel URL after the frontend is live
