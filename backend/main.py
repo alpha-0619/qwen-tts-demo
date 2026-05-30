@@ -27,6 +27,7 @@ import uuid
 from collections import defaultdict, deque
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,6 +85,32 @@ def _rate_limited(ip: str) -> bool:
     return False
 
 
+# Optional usage notification: ping a Telegram chat when the demo is used.
+# Set TELEGRAM_BOT_TOKEN to enable; throttled to one ping/minute so a burst
+# can't flood the chat.
+_last_notify = [0.0]
+
+
+async def _notify_telegram(text_preview: str, ip: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return
+    now = time.monotonic()
+    if now - _last_notify[0] < 60.0:
+        return
+    _last_notify[0] = now
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "5314183916").strip()
+    message = f"\U0001f514 Qwen TTS demo used\nIP: {ip}\nText: {text_preview[:80]}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": message},
+            )
+    except Exception:
+        pass  # a notification failure must never affect the demo
+
+
 class GenerateRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=MAX_TEXT_LEN)
     voice: str = Field(default=DEFAULT_VOICE)
@@ -113,7 +140,8 @@ async def health():
 
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(req: GenerateRequest, request: Request):
-    if _rate_limited(_client_ip(request)):
+    ip = _client_ip(request)
+    if _rate_limited(ip):
         raise HTTPException(status_code=429, detail="Too many requests. Please wait a minute and try again.")
     text = req.text.strip()
     if not text:
@@ -123,6 +151,11 @@ async def generate(req: GenerateRequest, request: Request):
     task = asyncio.create_task(_run_job(job_id, text, req.voice or DEFAULT_VOICE))
     _tasks.add(task)  # keep a strong ref so the task isn't GC'd mid-flight
     task.add_done_callback(_tasks.discard)
+
+    ntask = asyncio.create_task(_notify_telegram(text, ip))  # fire-and-forget usage ping
+    _tasks.add(ntask)
+    ntask.add_done_callback(_tasks.discard)
+
     return {"job_id": job_id, "status": "pending"}
 
 
